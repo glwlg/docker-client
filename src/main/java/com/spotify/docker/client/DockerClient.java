@@ -37,6 +37,7 @@ import com.spotify.docker.client.exceptions.NodeNotFoundException;
 import com.spotify.docker.client.exceptions.NonSwarmNodeException;
 import com.spotify.docker.client.exceptions.NotFoundException;
 import com.spotify.docker.client.exceptions.PermissionException;
+import com.spotify.docker.client.exceptions.ServiceNotFoundException;
 import com.spotify.docker.client.exceptions.UnsupportedApiVersionException;
 import com.spotify.docker.client.messages.Container;
 import com.spotify.docker.client.messages.ContainerChange;
@@ -66,6 +67,9 @@ import com.spotify.docker.client.messages.TopResults;
 import com.spotify.docker.client.messages.Version;
 import com.spotify.docker.client.messages.Volume;
 import com.spotify.docker.client.messages.VolumeList;
+import com.spotify.docker.client.messages.swarm.Config;
+import com.spotify.docker.client.messages.swarm.ConfigCreateResponse;
+import com.spotify.docker.client.messages.swarm.ConfigSpec;
 import com.spotify.docker.client.messages.swarm.Node;
 import com.spotify.docker.client.messages.swarm.NodeInfo;
 import com.spotify.docker.client.messages.swarm.NodeSpec;
@@ -1596,7 +1600,20 @@ public interface DockerClient extends Closeable {
    */
   void updateService(String serviceId, Long version, ServiceSpec spec)
           throws DockerException, InterruptedException;
-
+  
+  /**
+   * Update an existing service. Only available in Docker API &gt;= 1.24.
+   *
+   * @param serviceId the identifier of the service
+   * @param version the version of the service
+   * @param spec the new service spec
+   * @param registryAuth the registry authentication configuration
+   * @throws DockerException      if a server error occurred (500)
+   * @throws InterruptedException If the thread is interrupted
+   */
+  void updateService(String serviceId, Long version, ServiceSpec spec, RegistryAuth registryAuth)
+          throws DockerException, InterruptedException;
+  
   /**
    * List all services. Only available in Docker API &gt;= 1.24.
    *
@@ -1625,6 +1642,22 @@ public interface DockerClient extends Closeable {
    * @throws InterruptedException If the thread is interrupted
    */
   void removeService(String serviceId)
+          throws DockerException, InterruptedException;
+
+  /**
+   * Get docker service logs.
+   *
+   * @param serviceId The id of the service to get logs for.
+   * @param params      Params for controlling what streams to get and whether to tail or not.
+   * @return A log message stream.
+   * @throws BadParamException
+   *                            if one or more params were bad (400)
+   * @throws ServiceNotFoundException
+   *                              if container is not found (404)
+   * @throws DockerException      if a server error occurred (500)
+   * @throws InterruptedException If the thread is interrupted
+   */
+  LogStream serviceLogs(String serviceId, LogsParam... params)
           throws DockerException, InterruptedException;
 
   /**
@@ -2872,7 +2905,78 @@ public interface DockerClient extends Closeable {
       super(name, value);
     }
   }
-  
+
+  /**
+   * List swarm configs. Only available in Docker API &gt;= 1.30.
+   *
+   * @return a list of configs
+   * @throws DockerException      if a server error occurred (500)
+   * @throws InterruptedException if the thread is interrupted
+   * @since Docker 1.13, API version 1.30
+   */
+  List<Config> listConfigs() throws DockerException, InterruptedException;
+
+  /**
+   * List swarm configs. Only available in Docker API &gt;= 1.30.
+   *
+   * @param criteria Config listing and filtering options
+   * @return a list of configs.
+   * @throws DockerException      if a server error occurred (500)
+   * @throws InterruptedException if the thread is interrupted
+   * @since Docker 1.13, API version 1.30
+   */
+  List<Config> listConfigs(final Config.Criteria criteria)
+      throws DockerException, InterruptedException;
+
+  /**
+   * Create a config. Only available in Docker API &gt;= 1.30.
+   *
+   * @param config The spec for the config.
+   * @return {@link ConfigCreateResponse}
+   * @throws ConflictException conflict (409)
+   * @throws DockerException if node is not part of a swarm (503) or a server error occurred (500)
+   * @since Docker 1.13, API version 1.30
+   */
+  ConfigCreateResponse createConfig(final ConfigSpec config)
+      throws DockerException, InterruptedException;
+
+  /**
+   * Inspect a config. Only available in Docker API &gt;= 1.30.
+   *
+   * @param configId The id of the config.
+   * @return {@link Config}
+   * @throws NotFoundException config not found (404)
+   * @throws DockerException if node is not part of a swarm (503) or a server error occurred (500)
+   * @since Docker 1.13, API version 1.30
+   */
+  Config inspectConfig(final String configId) throws DockerException, InterruptedException;
+
+  /**
+   * Delete a config. Only available in Docker API &gt;= 1.30.
+   *
+   * @param configId The id of the config.
+   *
+   * @throws NotFoundException config not found (404)
+   * @throws DockerException if node is not part of a swarm (503) or a server error occurred (500)
+   * @since Docker 1.13, API version 1.30
+   */
+  void deleteConfig(final String configId) throws DockerException, InterruptedException;
+
+  /**
+   * Update a swarm config. Only available in Docker API &gt;= 1.30.
+   *
+   * @param configId The id of the config to update
+   * @param version The version number of the config object being updated.
+   *                This is required to avoid conflicting writes
+   * @throws NodeNotFoundException If the config doesn't exist (404)
+   * @throws NonSwarmNodeException If the config is not part of a swarm (503)
+   * @throws DockerException If a server error occurred (500)
+   * @throws InterruptedException If the thread is interrupted
+   * @since Docker 1.13, API version 1.30
+   */
+  void updateConfig(final String configId, final Long version, final ConfigSpec nodeSpec)
+      throws DockerException, InterruptedException;
+
   /**
    * List swarm nodes. Only available in Docker API &gt;= 1.24.
    *

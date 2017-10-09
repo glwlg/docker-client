@@ -38,6 +38,7 @@ import static javax.ws.rs.HttpMethod.DELETE;
 import static javax.ws.rs.HttpMethod.GET;
 import static javax.ws.rs.HttpMethod.POST;
 import static javax.ws.rs.HttpMethod.PUT;
+import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 import static javax.ws.rs.core.MediaType.APPLICATION_JSON_TYPE;
 import static javax.ws.rs.core.MediaType.APPLICATION_OCTET_STREAM;
 import static javax.ws.rs.core.MediaType.APPLICATION_OCTET_STREAM_TYPE;
@@ -109,6 +110,9 @@ import com.spotify.docker.client.messages.TopResults;
 import com.spotify.docker.client.messages.Version;
 import com.spotify.docker.client.messages.Volume;
 import com.spotify.docker.client.messages.VolumeList;
+import com.spotify.docker.client.messages.swarm.Config;
+import com.spotify.docker.client.messages.swarm.ConfigCreateResponse;
+import com.spotify.docker.client.messages.swarm.ConfigSpec;
 import com.spotify.docker.client.messages.swarm.Node;
 import com.spotify.docker.client.messages.swarm.NodeInfo;
 import com.spotify.docker.client.messages.swarm.NodeSpec;
@@ -326,6 +330,8 @@ public class DefaultDockerClient implements DockerClient, Closeable {
 
   private static final GenericType<List<Node>> NODE_LIST = new GenericType<List<Node>>() { };
 
+  private static final GenericType<List<Config>> CONFIG_LIST = new GenericType<List<Config>>() { };
+
   private static final GenericType<List<Secret>> SECRET_LIST = new GenericType<List<Secret>>() { };
 
   private final Client client;
@@ -380,6 +386,7 @@ public class DefaultDockerClient implements DockerClient, Closeable {
    */
   protected DefaultDockerClient(final Builder builder) {
     final URI originalUri = checkNotNull(builder.uri, "uri");
+    checkNotNull(originalUri.getScheme(), "url has null scheme");
     this.apiVersion = builder.apiVersion();
 
     if ((builder.dockerCertificatesStore != null) && !originalUri.getScheme().equals("https")) {
@@ -1535,6 +1542,24 @@ public class DefaultDockerClient implements DockerClient, Closeable {
     }
   }
 
+  private LogStream getServiceLogStream(final String method, final WebTarget resource,
+                                        final String serviceId)
+      throws DockerException, InterruptedException {
+    try {
+      final Invocation.Builder request = resource.request("application/vnd.docker.raw-stream");
+      return request(method, LogStream.class, resource, request);
+    } catch (DockerRequestException e) {
+      switch (e.status()) {
+        case 400:
+          throw new BadParamException(getQueryParamMap(resource), e);
+        case 404:
+          throw new ServiceNotFoundException(serviceId);
+        default:
+          throw e;
+      }
+    }
+  }
+
   @Override
   public ExecCreation execCreate(final String containerId,
                                  final String[] cmd,
@@ -1844,11 +1869,19 @@ public class DefaultDockerClient implements DockerClient, Closeable {
   @Override
   public void updateService(final String serviceId, final Long version, final ServiceSpec spec)
       throws DockerException, InterruptedException {
+    updateService(serviceId, version, spec, registryAuthSupplier.authForSwarm());
+  }
+  
+  @Override
+  public void updateService(final String serviceId, final Long version, final ServiceSpec spec,
+                                             final RegistryAuth config)
+      throws DockerException, InterruptedException {
     assertApiVersionIsAbove("1.24");
     try {
       WebTarget resource = resource().path("services").path(serviceId).path("update");
       resource = resource.queryParam("version", version);
-      request(POST, String.class, resource, resource.request(APPLICATION_JSON_TYPE),
+      request(POST, String.class, resource, resource.request(APPLICATION_JSON_TYPE)
+              .header("X-Registry-Auth", authHeader(config)),
               Entity.json(spec));
     } catch (DockerRequestException e) {
       switch (e.status()) {
@@ -1915,6 +1948,21 @@ public class DefaultDockerClient implements DockerClient, Closeable {
   }
 
   @Override
+  public LogStream serviceLogs(String serviceId, LogsParam... params)
+          throws DockerException, InterruptedException {
+    assertApiVersionIsAbove("1.25");
+    WebTarget resource = noTimeoutResource()
+            .path("services").path(serviceId)
+            .path("logs");
+
+    for (final LogsParam param : params) {
+      resource = resource.queryParam(param.name(), param.value());
+    }
+
+    return getServiceLogStream(GET, resource, serviceId);
+  }
+
+  @Override
   public Task inspectTask(final String taskId) throws DockerException, InterruptedException {
     assertApiVersionIsAbove("1.24");
     try {
@@ -1965,6 +2013,143 @@ public class DefaultDockerClient implements DockerClient, Closeable {
     WebTarget resource = resource().path("tasks");
     resource = resource.queryParam("filters", urlEncodeFilters(filters));
     return request(GET, TASK_LIST, resource, resource.request(APPLICATION_JSON_TYPE));
+  }
+
+  @Override
+  public List<Config> listConfigs() throws DockerException, InterruptedException {
+    assertApiVersionIsAbove("1.30");
+
+    final WebTarget resource = resource().path("configs");
+
+    try {
+      return request(GET, CONFIG_LIST, resource, resource.request(APPLICATION_JSON_TYPE));
+    } catch (DockerRequestException e) {
+      switch (e.status()) {
+        case 503:
+          throw new NonSwarmNodeException("node is not part of a swarm", e);
+        default:
+          throw e;
+      }
+    }
+  }
+
+  @Override
+  public List<Config> listConfigs(final Config.Criteria criteria)
+      throws DockerException, InterruptedException {
+    assertApiVersionIsAbove("1.30");
+
+    final Map<String, List<String>> filters = new HashMap<>();
+
+    if (criteria.configId() != null) {
+      filters.put("id", Collections.singletonList(criteria.configId()));
+    }
+    if (criteria.label() != null) {
+      filters.put("label", Collections.singletonList(criteria.label()));
+    }
+    if (criteria.name() != null) {
+      filters.put("name", Collections.singletonList(criteria.name()));
+    }
+
+    final WebTarget resource = resource().path("configs")
+        .queryParam("filters", urlEncodeFilters(filters));
+
+    try {
+      return request(GET, CONFIG_LIST, resource, resource.request(APPLICATION_JSON_TYPE));
+    } catch (DockerRequestException e) {
+      switch (e.status()) {
+        case 503:
+          throw new NonSwarmNodeException("node is not part of a swarm", e);
+        default:
+          throw e;
+      }
+    }
+  }
+
+  @Override
+  public ConfigCreateResponse createConfig(final ConfigSpec config)
+      throws DockerException, InterruptedException {
+
+    assertApiVersionIsAbove("1.30");
+    final WebTarget resource = resource().path("configs").path("create");
+
+    try {
+      return request(POST, ConfigCreateResponse.class, resource,
+          resource.request(APPLICATION_JSON_TYPE),
+          Entity.json(config));
+    } catch (final DockerRequestException ex) {
+      switch (ex.status()) {
+        case 503:
+          throw new NonSwarmNodeException("Server not part of swarm.", ex);
+        case 409:
+          throw new ConflictException("Name conflicts with an existing object.", ex);
+        default:
+          throw ex;
+      }
+    }
+  }
+
+  @Override
+  public Config inspectConfig(final String configId) throws DockerException, InterruptedException {
+    assertApiVersionIsAbove("1.30");
+    final WebTarget resource = resource().path("configs").path(configId);
+
+    try {
+      return request(GET, Config.class, resource, resource.request(APPLICATION_JSON_TYPE));
+    } catch (final DockerRequestException ex) {
+      switch (ex.status()) {
+        case 404:
+          throw new NotFoundException("Config " + configId + " not found.", ex);
+        case 503:
+          throw new NonSwarmNodeException("Config not part of swarm.", ex);
+        default:
+          throw ex;
+      }
+    }
+  }
+
+  @Override
+  public void deleteConfig(final String configId) throws DockerException, InterruptedException {
+    assertApiVersionIsAbove("1.30");
+    final WebTarget resource = resource().path("configs").path(configId);
+
+    try {
+      request(DELETE, resource, resource.request(APPLICATION_JSON_TYPE));
+    } catch (final DockerRequestException ex) {
+      switch (ex.status()) {
+        case 404:
+          throw new NotFoundException("Config " + configId + " not found.", ex);
+        case 503:
+          throw new NonSwarmNodeException("Config not part of a swarm.", ex);
+        default:
+          throw ex;
+      }
+    }
+  }
+
+  @Override
+  public void updateConfig(final String configId, final Long version, final ConfigSpec nodeSpec)
+      throws DockerException, InterruptedException {
+
+    assertApiVersionIsAbove("1.30");
+
+    final WebTarget resource = resource().path("configs")
+        .path(configId)
+        .path("update")
+        .queryParam("version", version);
+
+    try {
+      request(POST, String.class, resource, resource.request(APPLICATION_JSON_TYPE),
+          Entity.json(nodeSpec));
+    } catch (DockerRequestException e) {
+      switch (e.status()) {
+        case 404:
+          throw new NotFoundException("Config " + configId + " not found.");
+        case 503:
+          throw new NonSwarmNodeException("Config not part of a swarm.", e);
+        default:
+          throw e;
+      }
+    }
   }
 
   @Override
@@ -2613,7 +2798,7 @@ public class DefaultDockerClient implements DockerClient, Closeable {
     } else {
       final String stripped = endpoint.replaceAll(".*://", "");
       final HostAndPort hostAndPort = HostAndPort.fromString(stripped);
-      final String hostText = hostAndPort.getHostText();
+      final String hostText = hostAndPort.getHost();
       final String scheme = certs.isPresent() ? "https" : "http";
 
       final int port = hostAndPort.getPortOrDefault(DockerHost.defaultPort());

@@ -31,6 +31,7 @@ import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.Assert.assertThat;
+import static org.mockito.Matchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -44,21 +45,29 @@ import com.google.common.collect.Lists;
 import com.google.common.io.BaseEncoding;
 import com.google.common.io.Resources;
 import com.spotify.docker.client.auth.RegistryAuthSupplier;
+import com.spotify.docker.client.exceptions.ConflictException;
 import com.spotify.docker.client.exceptions.DockerCertificateException;
 import com.spotify.docker.client.exceptions.DockerException;
 import com.spotify.docker.client.exceptions.NodeNotFoundException;
 import com.spotify.docker.client.exceptions.NonSwarmNodeException;
+import com.spotify.docker.client.exceptions.NotFoundException;
 import com.spotify.docker.client.messages.ContainerConfig;
 import com.spotify.docker.client.messages.HostConfig;
 import com.spotify.docker.client.messages.RegistryAuth;
 import com.spotify.docker.client.messages.RegistryConfigs;
 import com.spotify.docker.client.messages.ServiceCreateResponse;
+import com.spotify.docker.client.messages.swarm.Config;
+import com.spotify.docker.client.messages.swarm.ConfigBind;
+import com.spotify.docker.client.messages.swarm.ConfigCreateResponse;
+import com.spotify.docker.client.messages.swarm.ConfigFile;
+import com.spotify.docker.client.messages.swarm.ConfigSpec;
 import com.spotify.docker.client.messages.swarm.ContainerSpec;
 import com.spotify.docker.client.messages.swarm.EngineConfig;
 import com.spotify.docker.client.messages.swarm.Node;
 import com.spotify.docker.client.messages.swarm.NodeDescription;
 import com.spotify.docker.client.messages.swarm.NodeInfo;
 import com.spotify.docker.client.messages.swarm.NodeSpec;
+import com.spotify.docker.client.messages.swarm.SecretSpec;
 import com.spotify.docker.client.messages.swarm.ServiceSpec;
 import com.spotify.docker.client.messages.swarm.SwarmJoin;
 import com.spotify.docker.client.messages.swarm.TaskSpec;
@@ -74,6 +83,7 @@ import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
 import okio.Buffer;
+import org.glassfish.jersey.internal.util.Base64;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -586,11 +596,302 @@ public class DefaultDockerClientUnitTest {
         contains("unable to pin image this_image_is_not_found_in_the_registry to digest"));
   }
 
+  @Test
+  public void testServiceLogs() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.25");
+
+    server.enqueue(new MockResponse()
+            .setResponseCode(200)
+            .addHeader("Content-Type", "text/plain; charset=utf-8")
+            .setBody(
+                fixture("fixtures/1.25/serviceLogs.txt")
+            )
+    );
+
+    final LogStream stream = dockerClient.serviceLogs("serviceId", DockerClient.LogsParam.stderr());
+    assertThat(stream.readFully(), is("Log Statement"));
+  }
+
   private void enqueueServerApiEmptyResponse(final int statusCode) {
     server.enqueue(new MockResponse()
         .setResponseCode(statusCode)
         .addHeader("Content-Type", "application/json")
     );
+  }
+
+  @Test
+  public void testCreateServiceWithConfig() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    // build() calls /version to check what format of header to send
+    enqueueServerApiVersion("1.30");
+    enqueueServerApiResponse(201, "fixtures/1.30/configCreateResponse.json");
+
+    final ConfigSpec configSpec = ConfigSpec
+        .builder()
+        .data(Base64.encodeAsString("foobar"))
+        .name("foo.yaml")
+        .build();
+
+    final ConfigCreateResponse configCreateResponse = dockerClient.createConfig(configSpec);
+    assertThat(configCreateResponse.id(), equalTo("ktnbjxoalbkvbvedmg1urrz8h"));
+
+    final ConfigBind configBind = ConfigBind.builder()
+        .configName(configSpec.name())
+        .configId(configCreateResponse.id())
+        .file(ConfigFile.builder()
+          .gid("1000")
+          .uid("1000")
+          .mode(600L)
+          .name(configSpec.name())
+          .build()
+        ).build();
+
+    final TaskSpec taskSpec = TaskSpec.builder()
+        .containerSpec(ContainerSpec.builder()
+            .image("this_image_is_found_in_the_registry")
+            .configs(ImmutableList.of(configBind))
+            .build())
+        .build();
+
+    final ServiceSpec spec = ServiceSpec.builder()
+        .name("test")
+        .taskTemplate(taskSpec)
+        .build();
+
+    enqueueServerApiVersion("1.30");
+    enqueueServerApiResponse(201, "fixtures/1.30/createServiceResponse.json");
+
+    final ServiceCreateResponse response = dockerClient.createService(spec);
+    assertThat(response.id(), equalTo("ak7w3gjqoa3kuz8xcpnyy0pvl"));
+  }
+
+  @Test
+  public void testListConfigs() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.30");
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(200)
+        .addHeader("Content-Type", "application/json")
+        .setBody(
+            fixture("fixtures/1.30/listConfigs.json")
+        )
+    );
+
+    final List<Config> configs = dockerClient.listConfigs();
+    assertThat(configs.size(), equalTo(1));
+
+    final Config config = configs.get(0);
+
+    assertThat(config, notNullValue());
+    assertThat(config.id(), equalTo("ktnbjxoalbkvbvedmg1urrz8h"));
+    assertThat(config.version().index(), equalTo(11L));
+
+    final ConfigSpec configSpec = config.configSpec();
+    assertThat(configSpec.name(), equalTo("server.conf"));
+  }
+
+  @Test
+  public void testCreateConfig() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.30");
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(201)
+        .addHeader("Content-Type", "application/json")
+        .setBody(
+            fixture("fixtures/1.30/inspectConfig.json")
+        )
+    );
+
+    final ConfigSpec configSpec = ConfigSpec
+        .builder()
+        .data(Base64.encodeAsString("foobar"))
+        .name("foo.yaml")
+        .build();
+
+    final ConfigCreateResponse configCreateResponse = dockerClient.createConfig(configSpec);
+
+    assertThat(configCreateResponse.id(), equalTo("ktnbjxoalbkvbvedmg1urrz8h"));
+  }
+
+  @Test(expected = ConflictException.class)
+  public void testCreateConfig_ConflictingName() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.30");
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(409)
+        .addHeader("Content-Type", "application/json")
+    );
+
+    final ConfigSpec configSpec = ConfigSpec
+        .builder()
+        .data(Base64.encodeAsString("foobar"))
+        .name("foo.yaml")
+        .build();
+
+    dockerClient.createConfig(configSpec);
+  }
+
+  @Test(expected = NonSwarmNodeException.class)
+  public void testCreateConfig_NonSwarmNode() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.30");
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(503)
+        .addHeader("Content-Type", "application/json")
+    );
+
+    final ConfigSpec configSpec = ConfigSpec
+        .builder()
+        .data(Base64.encodeAsString("foobar"))
+        .name("foo.yaml")
+        .build();
+
+    dockerClient.createConfig(configSpec);
+  }
+
+  @Test
+  public void testInspectConfig() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.30");
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(200)
+        .addHeader("Content-Type", "application/json")
+        .setBody(
+            fixture("fixtures/1.30/inspectConfig.json")
+        )
+    );
+
+    final Config config = dockerClient.inspectConfig("ktnbjxoalbkvbvedmg1urrz8h");
+
+    assertThat(config, notNullValue());
+    assertThat(config.id(), equalTo("ktnbjxoalbkvbvedmg1urrz8h"));
+    assertThat(config.version().index(), equalTo(11L));
+
+    final ConfigSpec configSpec = config.configSpec();
+    assertThat(configSpec.name(), equalTo("app-dev.crt"));
+  }
+
+  @Test(expected = NotFoundException.class)
+  public void testInspectConfig_NotFound() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.30");
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(404)
+        .addHeader("Content-Type", "application/json")
+    );
+
+    dockerClient.inspectConfig("ktnbjxoalbkvbvedmg1urrz8h");
+  }
+
+  @Test(expected = NonSwarmNodeException.class)
+  public void testInspectConfig_NonSwarmNode() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.30");
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(503)
+        .addHeader("Content-Type", "application/json")
+    );
+
+    dockerClient.inspectConfig("ktnbjxoalbkvbvedmg1urrz8h");
+  }
+
+  @Test
+  public void testDeleteConfig() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.30");
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(204)
+        .addHeader("Content-Type", "application/json")
+    );
+
+    dockerClient.deleteConfig("ktnbjxoalbkvbvedmg1urrz8h");
+  }
+
+  @Test(expected = NotFoundException.class)
+  public void testDeleteConfig_NotFound() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.30");
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(404)
+        .addHeader("Content-Type", "application/json")
+    );
+
+    dockerClient.deleteConfig("ktnbjxoalbkvbvedmg1urrz8h");
+  }
+
+  @Test(expected = NonSwarmNodeException.class)
+  public void testDeleteConfig_NonSwarmNode() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.30");
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(503)
+        .addHeader("Content-Type", "application/json")
+    );
+
+    dockerClient.deleteConfig("ktnbjxoalbkvbvedmg1urrz8h");
+  }
+
+  @Test(expected = NotFoundException.class)
+  public void testUpdateConfig_NotFound() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.30");
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(404)
+        .addHeader("Content-Type", "application/json")
+    );
+
+    final ConfigSpec configSpec = ConfigSpec
+        .builder()
+        .data(Base64.encodeAsString("foobar"))
+        .name("foo.yaml")
+        .build();
+
+    dockerClient.updateConfig("ktnbjxoalbkvbvedmg1urrz8h", 11L, configSpec);
+  }
+
+  @Test(expected = NonSwarmNodeException.class)
+  public void testUpdateConfig_NonSwarmNode() throws Exception {
+    final DefaultDockerClient dockerClient = new DefaultDockerClient(builder);
+
+    enqueueServerApiVersion("1.30");
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(503)
+        .addHeader("Content-Type", "application/json")
+    );
+
+    final ConfigSpec configSpec = ConfigSpec
+        .builder()
+        .data(Base64.encodeAsString("foobar"))
+        .name("foo.yaml")
+        .build();
+
+    dockerClient.updateConfig("ktnbjxoalbkvbvedmg1urrz8h", 11L, configSpec);
   }
 
   @Test

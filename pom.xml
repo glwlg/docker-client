@@ -8,7 +8,7 @@
   </parent>
 
   <artifactId>docker-client</artifactId>
-  <version>8.8.4-SNAPSHOT</version>
+  <version>8.9.2-SNAPSHOT</version>
   <packaging>jar</packaging>
   <name>docker-client</name>
   <description>A docker client</description>
@@ -84,7 +84,7 @@
     <dependency>
       <groupId>com.google.guava</groupId>
       <artifactId>guava</artifactId>
-      <version>18.0</version>
+      <version>20.0</version>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.jaxrs</groupId>
@@ -206,6 +206,7 @@
       <groupId>ch.qos.logback</groupId>
       <artifactId>logback-classic</artifactId>
       <version>1.2.1</version>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>com.google.jimfs</groupId>
@@ -319,6 +320,10 @@
               <include>org.glassfish.**</include>
               <include>com.github.jnr:*</include>
               <include>org.ow2.asm:*</include>
+              <include>com.google.guava:**</include>
+              <include>org.apache.httpcomponents:httpclient</include>
+              <include>org.apache.httpcomponents:httpcore</include>
+              <include>asm:asm</include>
             </includes>
           </artifactSet>
           <relocations>
@@ -335,8 +340,24 @@
               <shadedPattern>com.spotify.docker.client.shaded.javax.ws.rs</shadedPattern>
             </relocation>
             <relocation>
+              <pattern>org.glassfish</pattern>
+              <shadedPattern>com.spotify.docker.client.shaded.org.glassfish</shadedPattern>
+            </relocation> 
+            <relocation>
               <pattern>com.fasterxml.jackson</pattern>
               <shadedPattern>com.spotify.docker.client.shaded.com.fasterxml.jackson</shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>com.google.common</pattern>
+              <shadedPattern>com.spotify.docker.client.shaded.com.google.common</shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.http</pattern>
+              <shadedPattern>com.spotify.docker.client.shaded.org.apache.http</shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.objectweb.asm</pattern>
+              <shadedPattern>com.spotify.docker.client.shaded.org.objectweb.asm</shadedPattern>
             </relocation>
           </relocations>
           <shadedArtifactAttached>true</shadedArtifactAttached>

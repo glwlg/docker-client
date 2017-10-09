@@ -1,8 +1,66 @@
 # Changelog
 
+## 8.9.1
+
+Not yet released.
+
+- Support creating a service without specifying a name ([891][] Allow `ServiceSpec.name` to be nullable)
+- Change `TaskStatus.timestamp` from `String` to `Date` ([895][])
+
+[891]: https://github.com/spotify/docker-client/pull/891
+[895]: https://github.com/spotify/docker-client/pull/895
+
+## 8.8.5
+
+Released August 14, 2017
+
+- Allow `ImageInfo.RootFS` to be nullable. This field was added in Docker
+  Remote API 1.23 / Docker version 1.11. The field was added to the ImageInfo
+  class in docker-client 8.8.2. ([862][])
+- Support list, inspect, create, update, and delete configs
+
+[862]: https://github.com/spotify/docker-client/pull/862
+
+## 8.8.4
+
+Released August 8, 2017
+
+- [The "shaded" artifact for docker-client](README.md#a-note-on-shading)
+  additionally relocates `com.google.guava:guava` classes, to try to
+  help avoid conflicts for users that depend on incompatible versions
+  of Guava. ([850][])
+- Upgrade Google Guava to 20.0 ([792][])
+
+[792]: https://github.com/spotify/docker-client/pull/792
+[850]: https://github.com/spotify/docker-client/pull/850
+
+## 8.8.3
+
+Released August 3, 2017
+
+- add 'force' parameter to `disconnectFromNetwork` ([839])
+- allow additional `MemoryStats` attributes to be nullable ([847])
+- add missing `Options` property to `Ipam`, allow `Config` to be nullable ([843])
+
+[839]: https://github.com/spotify/docker-client/pull/839
+[847]: https://github.com/spotify/docker-client/pull/847
+[843]: https://github.com/spotify/docker-client/pull/843
+
+## 8.8.2
+
+Released July 24, 2017
+
+- add `attachable` property to `Network` ([830])
+- allow `UpdateStatus.completedAt` to be nullable ([834])
+- add `RootFS` property to `inspectImage` response ([835])
+
+[830]: https://github.com/spotify/docker-client/pull/830
+[834]: https://github.com/spotify/docker-client/pull/834
+[835]: https://github.com/spotify/docker-client/pull/835
+
 ## 8.8.1
 
-Not yet released
+Released July 13, 2017
 
 - Rename `NoOpRegistryAuthSupplier` to `FixedRegistryAuthSupplier`
 - Fix RegistryAuth JSON properties; RegistryAuth keys should all be lowercase
